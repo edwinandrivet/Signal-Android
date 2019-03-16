@@ -594,4 +594,104 @@ public class MessageNotifier {
       }
     }
   }
+
+  public static void notifyMessageDelivered(Context context, MessageRecord record) {
+    NotificationState notificationState = new NotificationState();
+
+    long         id                    = record.getId();
+    boolean      mms                   = record.isMms() || record.isMmsNotification();
+    Recipient    recipient             = record.getIndividualRecipient();
+    Recipient    conversationRecipient = record.getRecipient();
+    long         threadId              = record.getThreadId();
+    CharSequence body                  = record.getDisplayBody();
+    Recipient    threadRecipients      = null;
+    SlideDeck    slideDeck             = null;
+    long         timestamp             = record.getTimestamp();
+
+    if (threadId != -1) {
+      threadRecipients = DatabaseFactory.getThreadDatabase(context).getRecipientForThreadId(threadId);
+    }
+
+    // Would need translation support.
+    body = recipient.toShortString() + ": Received";
+    if (threadRecipients == null || !threadRecipients.isMuted()) {
+      notificationState.addNotification(new NotificationItem(id, mms, recipient, conversationRecipient, threadRecipients, threadId, body, timestamp, slideDeck));
+    }
+
+    // To be changed?
+    boolean signal = true;
+
+    if (signal && (System.currentTimeMillis() - lastAudibleNotification) < MIN_AUDIBLE_PERIOD_MILLIS) {
+      signal = false;
+    } else if (signal) {
+      lastAudibleNotification = System.currentTimeMillis();
+    }
+
+    if (notificationState.hasMultipleThreads()) {
+      for (long threadId_2 : notificationState.getThreads()) {
+        sendSingleThreadDeliveryNotification(context, new NotificationState(notificationState.getNotificationsForThread(threadId_2)), false, true);
+      }
+    } else {
+      sendSingleThreadDeliveryNotification(context, notificationState, signal, false);
+    }
+
+    cancelOrphanedNotifications(context, notificationState);
+    // updateBadge(context, notificationState.getMessageCount());
+  }
+
+  private static void sendSingleThreadDeliveryNotification(@NonNull  Context context,
+                                                   @NonNull  NotificationState notificationState,
+                                                   boolean signal, boolean bundled)
+  {
+    Log.i(TAG, "sendSingleThreadDeliveryNotification()  signal: " + signal + "  bundled: " + bundled);
+
+    if (notificationState.getNotifications().isEmpty()) {
+      if (!bundled) cancelActiveNotifications(context);
+      Log.i(TAG, "Empty notification state. Skipping.");
+      return;
+    }
+
+    SingleRecipientDeliveryNotificationBuilder builder        = new SingleRecipientDeliveryNotificationBuilder(context, TextSecurePreferences.getNotificationPrivacy(context));
+    List<NotificationItem>             notifications  = notificationState.getNotifications();
+    Recipient                          recipient      = notifications.get(0).getRecipient();
+    int                                notificationId = (int) (SUMMARY_NOTIFICATION_ID + (bundled ? notifications.get(0).getThreadId() : 0));
+
+
+    builder.setThread(notifications.get(0).getRecipient());
+    builder.setMessageCount(notificationState.getMessageCount());
+    builder.setPrimaryMessageBody(recipient, notifications.get(0).getIndividualRecipient(),
+                                  notifications.get(0).getText(), notifications.get(0).getSlideDeck());
+    builder.setContentIntent(notifications.get(0).getPendingIntent(context));
+    builder.setGroup(NOTIFICATION_GROUP);
+    builder.setDeleteIntent(notificationState.getDeleteIntent(context));
+    builder.setOnlyAlertOnce(!signal);
+    builder.setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY);
+
+    long timestamp = notifications.get(0).getTimestamp();
+    if (timestamp != 0) builder.setWhen(timestamp);
+
+    builder.addAndroidAutoAction(notificationState.getAndroidAutoReplyIntent(context, notifications.get(0).getRecipient()),
+                                 notificationState.getAndroidAutoHeardIntent(context, notificationId), notifications.get(0).getTimestamp());
+
+    ListIterator<NotificationItem> iterator = notifications.listIterator(notifications.size());
+
+    while(iterator.hasPrevious()) {
+      NotificationItem item = iterator.previous();
+      builder.addMessageBody(item.getRecipient(), item.getIndividualRecipient(), item.getText());
+    }
+
+    if (signal) {
+      builder.setAlarms(notificationState.getRingtone(context), notificationState.getVibrate());
+      builder.setTicker(notifications.get(0).getIndividualRecipient(),
+                        notifications.get(0).getText());
+    }
+
+    if (!bundled) {
+      builder.setGroupSummary(true);
+    }
+
+    Notification notification = builder.build();
+    NotificationManagerCompat.from(context).notify(notificationId, notification);
+    Log.i(TAG, "Posted notification. " + notification.toString());
+  }
 }

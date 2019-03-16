@@ -115,6 +115,9 @@ import java.util.List;
 import androidx.work.Data;
 import androidx.work.WorkerParameters;
 
+import org.thoughtcrime.securesms.database.MmsSmsDatabase;
+import org.thoughtcrime.securesms.notifications.MessageNotifier;
+
 public class PushDecryptJob extends ContextJob {
 
   private static final long serialVersionUID = 2L;
@@ -952,10 +955,20 @@ public class PushDecryptJob extends ContextJob {
   private void handleDeliveryReceipt(@NonNull SignalServiceContent content,
                                      @NonNull SignalServiceReceiptMessage message)
   {
+    Address author_address = Address.fromExternal(context, content.getSender());
+    long current_time = System.currentTimeMillis();
+    MessageRecord record;
+    MmsSmsDatabase mmsSmsDatabase;
+
     for (long timestamp : message.getTimestamps()) {
       Log.i(TAG, String.format("Received encrypted delivery receipt: (XXXXX, %d)", timestamp));
-      DatabaseFactory.getMmsSmsDatabase(context)
-                     .incrementDeliveryReceiptCount(new SyncMessageId(Address.fromExternal(context, content.getSender()), timestamp), System.currentTimeMillis());
+      mmsSmsDatabase = DatabaseFactory.getMmsSmsDatabase(context);
+      mmsSmsDatabase.incrementDeliveryReceiptCount(new SyncMessageId(author_address, timestamp), current_time);
+      record = mmsSmsDatabase.getMessageFor(timestamp, author_address);
+      if (record == null) {
+        return;
+      }
+      MessageNotifier.notifyMessageDelivered(context, record);
     }
   }
 
